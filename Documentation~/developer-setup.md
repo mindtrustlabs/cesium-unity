@@ -7,7 +7,7 @@ This is a summary of the setup and workflows for developers who want to modify t
 ### Prerequisites
 
 * CMake v3.18 or later (the latest version is recommended)
-* [.NET SDK v6.0 or later](https://dotnet.microsoft.com/en-us/download/dotnet/6.0)
+* [.NET SDK v7.0 or later](https://dotnet.microsoft.com/en-us/download/dotnet/7.0)
 * If you're using Visual Studio, you need Visual Studio 2022.
 * Unity 2021.3+ (the latest version of the Unity 2021.3 LTS release is recommended)
 * On Windows, support for long file paths must be enabled, or you are likely to see build errors. See [Maximum Path Length Limitation](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation?tabs=registry#enable-long-paths-in-windows-10-version-1607-and-later).
@@ -17,7 +17,7 @@ The built Cesium for Unity Assembly will run on much older versions of .NET, inc
 
 To make sure things are set up correctly, open a command-prompt (PowerShell is a good choice on Windows) and run:
 
-* `dotnet --version` and verify that it reports 6.0 or later
+* `dotnet --version` and verify that it reports 7.0 or later
 * `cmake --version` and verify that it reports 3.15 or later
 
 ### Setting up the development environment
