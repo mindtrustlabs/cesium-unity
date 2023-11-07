@@ -387,6 +387,8 @@ namespace CesiumForUnity
             meshData.subMeshCount = 1;
             meshData.SetSubMesh(0, new SubMeshDescriptor(0, 1, MeshTopology.Triangles));
 
+            
+
             NativeArray<Vector3> positionNormal = meshData.GetVertexData<Vector3>(0);
             NativeArray<Vector2> texCoord = meshData.GetVertexData<Vector2>(0);
             NativeArray<byte> vertexData = meshData.GetVertexData<byte>(0);
@@ -482,6 +484,9 @@ namespace CesiumForUnity
             globeAnchor.adjustOrientationForGlobeWhenMoving = globeAnchor.adjustOrientationForGlobeWhenMoving;
             globeAnchor.longitudeLatitudeHeight = globeAnchor.longitudeLatitudeHeight;
             globeAnchor.localToGlobeFixedMatrix = globeAnchor.localToGlobeFixedMatrix;
+
+            //UnityCameraSelector cameraSelector = go.AddComponent<UnityCameraSelector>();
+            Camera cam = UnityCameraSelector.GetCamera();
 
             // Private properties for use by the C++ class.
             globeAnchor._georeference = null;

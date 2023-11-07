@@ -8,6 +8,7 @@
 #include <CesiumUtility/Math.h>
 
 #include <DotNet/CesiumForUnity/CesiumGeoreference.h>
+#include <DotNet/CesiumForUnity/UnityCameraSelector.h>
 #include <DotNet/UnityEngine/Camera.h>
 #include <DotNet/UnityEngine/GameObject.h>
 #include <DotNet/UnityEngine/Matrix4x4.h>
@@ -98,7 +99,7 @@ std::vector<ViewState> CameraManager::getAllCameras(const GameObject& context) {
   }
 
   std::vector<ViewState> result;
-  Camera camera = Camera::main();
+  Camera camera =   UnityCameraSelector::GetCamera();
   if (camera != nullptr) {
     result.emplace_back(
         unityCameraToViewState(pCoordinateSystem, unityWorldToTileset, camera));
