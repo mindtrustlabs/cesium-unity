@@ -202,7 +202,7 @@ void Cesium3DTilesetImpl::OnDisable(
 
   this->_creditSystem = nullptr;
 
-  this->DestroyTileset(tileset);
+  //this->DestroyTileset(tileset);
 }
 
 void Cesium3DTilesetImpl::RecreateTileset(
@@ -395,7 +395,9 @@ void Cesium3DTilesetImpl::DestroyTileset(
     CesiumForUnity::CesiumRasterOverlay overlay = overlays[i];
     overlay.RemoveFromTileset();
   }
-
+  //SPDLOG_LOGGER_INFO(
+  //    this->_pTileset->getExternals().pLogger,
+  //    "Destroy this tile");
   this->_pTileset.reset();
 }
 
