@@ -413,6 +413,7 @@ void Cesium3DTilesetImpl::LoadTileset(
   options.loadingDescendantLimit = tileset.loadingDescendantLimit();
   options.enableFrustumCulling = tileset.enableFrustumCulling();
   options.enableFogCulling = tileset.enableFogCulling();
+  options.enableOcclusionCulling = false;
   options.enforceCulledScreenSpaceError =
       tileset.enforceCulledScreenSpaceError();
   options.culledScreenSpaceError = tileset.culledScreenSpaceError();
