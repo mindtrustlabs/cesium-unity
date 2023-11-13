@@ -266,7 +266,7 @@ struct CalculateECEFCameraPosition {
 
 void Cesium3DTilesetImpl::FocusTileset(
     const DotNet::CesiumForUnity::Cesium3DTileset& tileset) {
-
+  /*
 #if UNITY_EDITOR
   UnityEditor::SceneView lastActiveEditorView =
       UnityEditor::SceneView::lastActiveSceneView();
@@ -324,6 +324,7 @@ void Cesium3DTilesetImpl::FocusTileset(
       unityCameraFrontf,
       UnityEngine::Vector3::up()));
 #endif
+*/
 }
 
 float Cesium3DTilesetImpl::ComputeLoadProgress(
@@ -395,9 +396,13 @@ void Cesium3DTilesetImpl::DestroyTileset(
     CesiumForUnity::CesiumRasterOverlay overlay = overlays[i];
     overlay.RemoveFromTileset();
   }
+
+  //if (this->_pTileset->getExternals() == nullptr && this->_pTileset->getExternals().pLogger !== nullptr)
   //SPDLOG_LOGGER_INFO(
   //    this->_pTileset->getExternals().pLogger,
-  //    "Destroy this tile");
+  //    "Destroy this tile {0}",
+  //    tileset.gameObject().name().ToStlString());
+
   this->_pTileset.reset();
 }
 
