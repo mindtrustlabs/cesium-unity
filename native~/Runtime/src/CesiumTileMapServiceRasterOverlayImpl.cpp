@@ -3,8 +3,8 @@
 #include "Cesium3DTilesetImpl.h"
 #include "CesiumRasterOverlayUtility.h"
 
-#include <Cesium3DTilesSelection/TileMapServiceRasterOverlay.h>
 #include <Cesium3DTilesSelection/Tileset.h>
+#include <CesiumRasterOverlays/TileMapServiceRasterOverlay.h>
 
 #include <DotNet/CesiumForUnity/Cesium3DTileset.h>
 #include <DotNet/CesiumForUnity/CesiumRasterOverlay.h>
@@ -12,6 +12,7 @@
 #include <DotNet/System/String.h>
 
 using namespace Cesium3DTilesSelection;
+using namespace CesiumRasterOverlays;
 using namespace DotNet;
 
 namespace CesiumForUnityNative {
@@ -53,7 +54,7 @@ void CesiumTileMapServiceRasterOverlayImpl::AddToTileset(
       CesiumRasterOverlayUtility::GetOverlayOptions(genericOverlay);
 
   this->_pOverlay = new TileMapServiceRasterOverlay(
-      overlay.name().ToStlString(),
+      overlay.materialKey().ToStlString(),
       overlay.url().ToStlString(),
       std::vector<CesiumAsync::IAssetAccessor::THeader>(),
       tmsOptions,

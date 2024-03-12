@@ -40,6 +40,7 @@ target_link_libraries(
     PUBLIC
       Cesium3DTilesSelection
       CesiumAsync
+      CesiumIonClient
     PRIVATE
       tidy-static
       enum-flags
@@ -52,6 +53,14 @@ set_target_properties(
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS NO
 )
+
+if (MSVC)
+  target_compile_options(
+    CesiumForUnityNative-Runtime
+    PRIVATE
+      /bigobj
+  )
+endif()
 
 target_compile_definitions(
   CesiumForUnityNative-Runtime

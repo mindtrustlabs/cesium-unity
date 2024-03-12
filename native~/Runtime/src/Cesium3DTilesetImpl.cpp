@@ -1,24 +1,24 @@
 #include "Cesium3DTilesetImpl.h"
 
 #include "CameraManager.h"
+#include "CesiumIonServerHelper.h"
 #include "UnityPrepareRendererResources.h"
 #include "UnityTileExcluderAdaptor.h"
 #include "UnityTilesetExternals.h"
 
-#include <Cesium3DTilesSelection/IonRasterOverlay.h>
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <CesiumGeospatial/GlobeTransforms.h>
+#include <CesiumIonClient/Connection.h>
+#include <CesiumRasterOverlays/IonRasterOverlay.h>
 
 #include <DotNet/CesiumForUnity/Cesium3DTileset.h>
 #include <DotNet/CesiumForUnity/Cesium3DTilesetLoadFailureDetails.h>
 #include <DotNet/CesiumForUnity/Cesium3DTilesetLoadType.h>
 #include <DotNet/CesiumForUnity/CesiumDataSource.h>
 #include <DotNet/CesiumForUnity/CesiumGeoreference.h>
+#include <DotNet/CesiumForUnity/CesiumIonServer.h>
 #include <DotNet/CesiumForUnity/CesiumRasterOverlay.h>
-#include <DotNet/CesiumForUnity/CesiumRuntimeSettings.h>
 #include <DotNet/CesiumForUnity/CesiumTileExcluder.h>
-#include <DotNet/System/Action.h>
-#include <DotNet/System/Array1.h>
 #include <DotNet/System/Object.h>
 #include <DotNet/System/String.h>
 #include <DotNet/UnityEngine/Application.h>
@@ -28,6 +28,7 @@
 #include <DotNet/UnityEngine/Experimental/Rendering/GraphicsFormat.h>
 #include <DotNet/UnityEngine/GameObject.h>
 #include <DotNet/UnityEngine/Material.h>
+#include <DotNet/UnityEngine/Object.h>
 #include <DotNet/UnityEngine/Quaternion.h>
 #include <DotNet/UnityEngine/SystemInfo.h>
 #include <DotNet/UnityEngine/Time.h>
@@ -39,6 +40,7 @@
 #if UNITY_EDITOR
 #include <DotNet/UnityEditor/CallbackFunction.h>
 #include <DotNet/UnityEditor/EditorApplication.h>
+#include <DotNet/UnityEditor/EditorUtility.h>
 #include <DotNet/UnityEditor/SceneView.h>
 #endif
 
@@ -263,6 +265,35 @@ struct CalculateECEFCameraPosition {
   }
 };
 } // namespace
+
+void Cesium3DTilesetImpl::updateOverlayMaterialKeys(
+    const DotNet::System::Array1<DotNet::CesiumForUnity::CesiumRasterOverlay>&
+        overlays) {
+  if (!this->_pTileset ||
+      !this->_pTileset->getExternals().pPrepareRendererResources) {
+    return;
+  }
+
+  std::vector<std::string> overlayMaterialKeys(overlays.Length());
+  for (int32_t i = 0, len = overlays.Length(); i < len; ++i) {
+    CesiumForUnity::CesiumRasterOverlay overlay = overlays[i];
+    overlayMaterialKeys[i] = overlay.materialKey().ToStlString();
+  }
+
+  // Use material keys to resolve the property IDs in TilesetMaterialProperties.
+  UnityPrepareRendererResources* pRendererResources =
+      static_cast<UnityPrepareRendererResources*>(
+          this->_pTileset->getExternals().pPrepareRendererResources.get());
+  pRendererResources->getMaterialProperties().updateOverlayParameterIDs(
+      overlayMaterialKeys);
+}
+
+void Cesium3DTilesetImpl::UpdateOverlayMaterialKeys(
+    const DotNet::CesiumForUnity::Cesium3DTileset& tileset) {
+  this->updateOverlayMaterialKeys(
+      tileset.gameObject()
+          .GetComponents<CesiumForUnity::CesiumRasterOverlay>());
+}
 
 void Cesium3DTilesetImpl::FocusTileset(
     const DotNet::CesiumForUnity::Cesium3DTileset& tileset) {
@@ -503,6 +534,8 @@ void Cesium3DTilesetImpl::LoadTileset(
   contentOptions.ktx2TranscodeTargets =
       CesiumGltf::Ktx2TranscodeTargets(supportedFormats, false);
 
+  contentOptions.applyTextureTransform = false;
+
   options.contentOptions = contentOptions;
 
   this->_lastUpdateResult = ViewUpdateResult();
@@ -511,15 +544,27 @@ void Cesium3DTilesetImpl::LoadTileset(
       CesiumForUnity::CesiumDataSource::FromCesiumIon) {
     System::String ionAccessToken = tileset.ionAccessToken();
     if (System::String::IsNullOrEmpty(ionAccessToken)) {
-      ionAccessToken =
-          CesiumForUnity::CesiumRuntimeSettings::defaultIonAccessToken();
+      ionAccessToken = tileset.ionServer().defaultIonAccessToken();
     }
 
-    this->_pTileset = std::make_unique<Tileset>(
-        createTilesetExternals(tileset),
-        tileset.ionAssetID(),
-        ionAccessToken.ToStlString(),
-        options);
+    std::string ionAssetEndpointUrl =
+        tileset.ionServer().apiUrl().ToStlString();
+
+    if (!ionAssetEndpointUrl.empty()) {
+      // Make sure the URL ends with a slash
+      if (*ionAssetEndpointUrl.rbegin() != '/')
+        ionAssetEndpointUrl += '/';
+
+      this->_pTileset = std::make_unique<Tileset>(
+          createTilesetExternals(tileset),
+          tileset.ionAssetID(),
+          ionAccessToken.ToStlString(),
+          options,
+          ionAssetEndpointUrl);
+    } else {
+      // Resolve the API URL if it's not already in progress.
+      resolveCesiumIonApiUrl(tileset.ionServer());
+    }
   } else {
     this->_pTileset = std::make_unique<Tileset>(
         createTilesetExternals(tileset),
@@ -527,7 +572,7 @@ void Cesium3DTilesetImpl::LoadTileset(
         options);
   }
 
-  // Add any overlay components
+  // Add any overlay components.
   System::Array1<CesiumForUnity::CesiumRasterOverlay> overlays =
       tileset.gameObject().GetComponents<CesiumForUnity::CesiumRasterOverlay>();
   for (int32_t i = 0, len = overlays.Length(); i < len; ++i) {
@@ -535,7 +580,9 @@ void Cesium3DTilesetImpl::LoadTileset(
     overlay.AddToTileset();
   }
 
-  // Add any tile excluder components
+  this->updateOverlayMaterialKeys(overlays);
+
+  // Add any tile excluder components.
   System::Array1<CesiumForUnity::CesiumTileExcluder> excluders =
       tileset.gameObject()
           .GetComponentsInParent<CesiumForUnity::CesiumTileExcluder>();
@@ -552,8 +599,7 @@ void Cesium3DTilesetImpl::LoadTileset(
   // destroying it on the first tick after creation.
   if (tileset.opaqueMaterial() != nullptr) {
     int32_t opaqueMaterialHash = tileset.opaqueMaterial().ComputeCRC();
-    _lastOpaqueMaterialHash = opaqueMaterialHash;
+    this->_lastOpaqueMaterialHash = opaqueMaterialHash;
   }
 }
-
 } // namespace CesiumForUnityNative

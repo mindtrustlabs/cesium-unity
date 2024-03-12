@@ -1,30 +1,38 @@
 #include "UnityPrepareRendererResources.h"
 
+#include "CesiumFeaturesMetadataUtility.h"
 #include "TextureLoader.h"
+#include "TilesetMaterialProperties.h"
 #include "UnityLifetime.h"
 #include "UnityTransforms.h"
 
-#include <Cesium3DTilesSelection/GltfUtilities.h>
 #include <Cesium3DTilesSelection/Tile.h>
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <CesiumGeometry/Transforms.h>
 #include <CesiumGeospatial/Ellipsoid.h>
 #include <CesiumGltf/AccessorView.h>
+#include <CesiumGltf/ExtensionExtMeshFeatures.h>
 #include <CesiumGltf/ExtensionKhrMaterialsUnlit.h>
-#include <CesiumGltf/ExtensionMeshPrimitiveExtFeatureMetadata.h>
-#include <CesiumGltf/ExtensionModelExtFeatureMetadata.h>
+#include <CesiumGltf/ExtensionKhrTextureTransform.h>
+#include <CesiumGltf/ExtensionModelExtStructuralMetadata.h>
+#include <CesiumGltf/KhrTextureTransform.h>
+#include <CesiumGltfContent/GltfUtilities.h>
 #include <CesiumGltfReader/GltfReader.h>
-#include <CesiumShaderProperties.h>
 #include <CesiumUtility/ScopeGuard.h>
 
 #include <DotNet/CesiumForUnity/Cesium3DTileInfo.h>
 #include <DotNet/CesiumForUnity/Cesium3DTileset.h>
+#include <DotNet/CesiumForUnity/CesiumFeatureIdAttribute.h>
+#include <DotNet/CesiumForUnity/CesiumFeatureIdSet.h>
 #include <DotNet/CesiumForUnity/CesiumGeoreference.h>
 #include <DotNet/CesiumForUnity/CesiumGlobeAnchor.h>
 #include <DotNet/CesiumForUnity/CesiumMetadata.h>
+#include <DotNet/CesiumForUnity/CesiumModelMetadata.h>
 #include <DotNet/CesiumForUnity/CesiumObjectPool1.h>
 #include <DotNet/CesiumForUnity/CesiumObjectPools.h>
 #include <DotNet/CesiumForUnity/CesiumPointCloudRenderer.h>
+#include <DotNet/CesiumForUnity/CesiumPrimitiveFeatures.h>
+#include <DotNet/CesiumForUnity/CesiumPropertyTable.h>
 #include <DotNet/System/Array1.h>
 #include <DotNet/System/Collections/Generic/List1.h>
 #include <DotNet/System/Object.h>
@@ -63,9 +71,12 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <array>
 #include <unordered_map>
 #include <variant>
 
+using namespace CesiumRasterOverlays;
+using namespace CesiumGltfContent;
 using namespace Cesium3DTilesSelection;
 using namespace CesiumForUnityNative;
 using namespace CesiumGeometry;
@@ -73,6 +84,9 @@ using namespace CesiumGeospatial;
 using namespace CesiumGltf;
 using namespace CesiumUtility;
 using namespace DotNet;
+
+static const CesiumGltf::MaterialPBRMetallicRoughness
+    defaultPbrMetallicRoughness;
 
 namespace {
 
@@ -825,8 +839,8 @@ struct LoadThreadResult {
 };
 
 UnityPrepareRendererResources::UnityPrepareRendererResources(
-    const UnityEngine::GameObject& tileset)
-    : _tileset(tileset), _shaderProperty() {}
+    const UnityEngine::GameObject& tilesetGameObject)
+    : _tilesetGameObject(tilesetGameObject), _materialProperties() {}
 
 CesiumAsync::Future<TileLoadResultAndRenderResources>
 UnityPrepareRendererResources::prepareInLoadThread(
@@ -871,7 +885,7 @@ UnityPrepareRendererResources::prepareInLoadThread(
                 std::move(tileLoadResult)};
           })
       .thenInMainThread(
-          [asyncSystem, tileset = this->_tileset](
+          [asyncSystem, tileset = this->_tilesetGameObject](
               IntermediateLoadThreadResult&& workerResult) mutable {
             bool shouldCreatePhysicsMeshes = false;
             bool shouldShowTilesInHierarchy = false;
@@ -970,6 +984,311 @@ UnityPrepareRendererResources::prepareInLoadThread(
           });
 }
 
+namespace {
+UnityEngine::Vector4
+gltfVectorToUnityVector(const std::vector<double>& values, float defaultValue) {
+  UnityEngine::Vector4 result{
+      defaultValue,
+      defaultValue,
+      defaultValue,
+      defaultValue};
+
+  if (values.size() > 0) {
+    result.x = static_cast<float>(values[0]);
+  }
+
+  if (values.size() > 1) {
+    result.y = static_cast<float>(values[1]);
+  }
+
+  if (values.size() > 2) {
+    result.z = static_cast<float>(values[2]);
+  }
+
+  if (values.size() > 3) {
+    result.w = static_cast<float>(values[3]);
+  }
+
+  return result;
+}
+
+void setGltfMaterialParameterValues(
+    const CesiumGltf::Model& model,
+    const CesiumPrimitiveInfo& primitiveInfo,
+    const CesiumGltf::Material& gltfMaterial,
+    const UnityEngine::Material& unityMaterial,
+    const TilesetMaterialProperties& materialProperties) {
+  CESIUM_TRACE("Cesium::CreateMaterials");
+
+  const CesiumGltf::MaterialPBRMetallicRoughness& pbr =
+      gltfMaterial.pbrMetallicRoughness
+          ? gltfMaterial.pbrMetallicRoughness.value()
+          : defaultPbrMetallicRoughness;
+
+  // Add base color factor and metallic-roughness factor regardless
+  // of whether the textures are present.
+  const std::vector<double>& baseColorFactor = pbr.baseColorFactor;
+  unityMaterial.SetVector(
+      materialProperties.getBaseColorFactorID(),
+      gltfVectorToUnityVector(baseColorFactor, 1.0f));
+
+  UnityEngine::Vector4 metallicRoughnessFactor;
+  unityMaterial.SetVector(
+      materialProperties.getMetallicRoughnessFactorID(),
+      {(float)pbr.metallicFactor, (float)pbr.roughnessFactor, 0, 0});
+
+  const std::optional<TextureInfo>& baseColorTexture = pbr.baseColorTexture;
+  if (baseColorTexture) {
+    auto texCoordIndexIt =
+        primitiveInfo.uvIndexMap.find(baseColorTexture->texCoord);
+    if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
+      UnityEngine::Texture texture =
+          TextureLoader::loadTexture(model, baseColorTexture->index);
+      if (texture != nullptr) {
+        texture.hideFlags(DotNet::UnityEngine::HideFlags::HideAndDontSave);
+        unityMaterial.SetTexture(
+            materialProperties.getBaseColorTextureID(),
+            texture);
+        unityMaterial.SetFloat(
+            materialProperties.getBaseColorTextureCoordinateIndexID(),
+            static_cast<float>(texCoordIndexIt->second));
+      }
+    }
+  }
+
+  const std::optional<TextureInfo>& metallicRoughness =
+      pbr.metallicRoughnessTexture;
+  if (metallicRoughness) {
+    auto texCoordIndexIt =
+        primitiveInfo.uvIndexMap.find(metallicRoughness->texCoord);
+    if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
+      UnityEngine::Texture texture =
+          TextureLoader::loadTexture(model, metallicRoughness->index);
+      if (texture != nullptr) {
+        texture.hideFlags(DotNet::UnityEngine::HideFlags::HideAndDontSave);
+        unityMaterial.SetTexture(
+            materialProperties.getMetallicRoughnessTextureID(),
+            texture);
+        unityMaterial.SetFloat(
+            materialProperties.getMetallicRoughnessTextureCoordinateIndexID(),
+            static_cast<float>(texCoordIndexIt->second));
+      }
+    }
+  }
+
+  const std::vector<double>& emissiveFactor = gltfMaterial.emissiveFactor;
+  unityMaterial.SetVector(
+      materialProperties.getEmissiveFactorID(),
+      gltfVectorToUnityVector(emissiveFactor, 0.0f));
+  if (gltfMaterial.emissiveTexture) {
+    auto texCoordIndexIt =
+        primitiveInfo.uvIndexMap.find(gltfMaterial.emissiveTexture->texCoord);
+    if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
+      UnityEngine::Texture texture = TextureLoader::loadTexture(
+          model,
+          gltfMaterial.emissiveTexture->index);
+      if (texture != nullptr) {
+        texture.hideFlags(DotNet::UnityEngine::HideFlags::HideAndDontSave);
+        unityMaterial.SetTexture(
+            materialProperties.getEmissiveTextureID(),
+            texture);
+        unityMaterial.SetFloat(
+            materialProperties.getEmissiveTextureCoordinateIndexID(),
+            static_cast<float>(texCoordIndexIt->second));
+      }
+    }
+  }
+
+  if (gltfMaterial.normalTexture) {
+    auto texCoordIndexIt =
+        primitiveInfo.uvIndexMap.find(gltfMaterial.normalTexture->texCoord);
+    if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
+      UnityEngine::Texture texture =
+          TextureLoader::loadTexture(model, gltfMaterial.normalTexture->index);
+      if (texture != nullptr) {
+        texture.hideFlags(DotNet::UnityEngine::HideFlags::HideAndDontSave);
+        unityMaterial.SetTexture(
+            materialProperties.getNormalMapTextureID(),
+            texture);
+        unityMaterial.SetFloat(
+            materialProperties.getNormalMapTextureCoordinateIndexID(),
+            static_cast<float>(texCoordIndexIt->second));
+        unityMaterial.SetFloat(
+            materialProperties.getNormalMapScaleID(),
+            static_cast<float>(gltfMaterial.normalTexture->scale));
+      }
+    }
+  }
+
+  if (gltfMaterial.occlusionTexture) {
+    auto texCoordIndexIt =
+        primitiveInfo.uvIndexMap.find(gltfMaterial.occlusionTexture->texCoord);
+    if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
+      UnityEngine::Texture texture = TextureLoader::loadTexture(
+          model,
+          gltfMaterial.occlusionTexture->index);
+      if (texture != nullptr) {
+        texture.hideFlags(DotNet::UnityEngine::HideFlags::HideAndDontSave);
+        unityMaterial.SetTexture(
+            materialProperties.getOcclusionTextureID(),
+            texture);
+        unityMaterial.SetFloat(
+            materialProperties.getOcclusionTextureCoordinateIndexID(),
+            static_cast<float>(texCoordIndexIt->second));
+        unityMaterial.SetFloat(
+            materialProperties.getOcclusionStrengthID(),
+            static_cast<float>(gltfMaterial.occlusionTexture->strength));
+      }
+    }
+  }
+
+  // Handle KHR_texture_transform for each available texture.
+  KhrTextureTransform textureTransform;
+
+  const ExtensionKhrTextureTransform* pBaseColorTextureTransform =
+      pbr.baseColorTexture
+          ? pbr.baseColorTexture->getExtension<ExtensionKhrTextureTransform>()
+          : nullptr;
+  if (pBaseColorTextureTransform) {
+    textureTransform = KhrTextureTransform(*pBaseColorTextureTransform);
+    if (textureTransform.status() == KhrTextureTransformStatus::Valid) {
+      const glm::dvec2& scale = textureTransform.scale();
+      const glm::dvec2& offset = textureTransform.offset();
+      unityMaterial.SetTextureOffset(
+          materialProperties.getBaseColorTextureID(),
+          {static_cast<float>(offset[0]), static_cast<float>(offset[1])});
+      unityMaterial.SetTextureScale(
+          materialProperties.getBaseColorTextureID(),
+          {static_cast<float>(scale[0]), static_cast<float>(scale[1])});
+
+      const glm::dvec2& rotationSineCosine =
+          textureTransform.rotationSineCosine();
+      unityMaterial.SetVector(
+          materialProperties.getBaseColorTextureRotationID(),
+          {static_cast<float>(rotationSineCosine[0]),
+           static_cast<float>(rotationSineCosine[1]),
+           0.0f,
+           0.0f});
+    }
+  }
+
+  const ExtensionKhrTextureTransform* pMetallicRoughnessTextureTransform =
+      pbr.metallicRoughnessTexture
+          ? pbr.metallicRoughnessTexture
+                ->getExtension<ExtensionKhrTextureTransform>()
+          : nullptr;
+  if (pMetallicRoughnessTextureTransform) {
+    textureTransform = KhrTextureTransform(*pMetallicRoughnessTextureTransform);
+    if (textureTransform.status() == KhrTextureTransformStatus::Valid) {
+      const glm::dvec2& scale = textureTransform.scale();
+      const glm::dvec2& offset = textureTransform.offset();
+      unityMaterial.SetTextureOffset(
+          materialProperties.getMetallicRoughnessTextureID(),
+          {static_cast<float>(offset[0]), static_cast<float>(offset[1])});
+      unityMaterial.SetTextureScale(
+          materialProperties.getMetallicRoughnessTextureID(),
+          {static_cast<float>(scale[0]), static_cast<float>(scale[1])});
+
+      const glm::dvec2& rotationSineCosine =
+          textureTransform.rotationSineCosine();
+      unityMaterial.SetVector(
+          materialProperties.getMetallicRoughnessTextureRotationID(),
+          {static_cast<float>(rotationSineCosine[0]),
+           static_cast<float>(rotationSineCosine[1]),
+           0.0f,
+           0.0f});
+    }
+  }
+
+  const ExtensionKhrTextureTransform* pNormalTextureTransform =
+      gltfMaterial.normalTexture
+          ? gltfMaterial.normalTexture
+                ->getExtension<ExtensionKhrTextureTransform>()
+          : nullptr;
+  if (pNormalTextureTransform) {
+    textureTransform = KhrTextureTransform(*pNormalTextureTransform);
+    if (textureTransform.status() == KhrTextureTransformStatus::Valid) {
+      const glm::dvec2& scale = textureTransform.scale();
+      const glm::dvec2& offset = textureTransform.offset();
+
+      unityMaterial.SetTextureOffset(
+          materialProperties.getNormalMapTextureID(),
+          {static_cast<float>(offset[0]), static_cast<float>(offset[1])});
+      unityMaterial.SetTextureScale(
+          materialProperties.getNormalMapTextureID(),
+          {static_cast<float>(scale[0]), static_cast<float>(scale[1])});
+
+      const glm::dvec2& rotationSineCosine =
+          textureTransform.rotationSineCosine();
+      unityMaterial.SetVector(
+          materialProperties.getNormalMapTextureRotationID(),
+          {static_cast<float>(rotationSineCosine[0]),
+           static_cast<float>(rotationSineCosine[1]),
+           0.0f,
+           0.0f});
+    }
+  }
+
+  const ExtensionKhrTextureTransform* pEmissiveTextureTransform =
+      gltfMaterial.emissiveTexture
+          ? gltfMaterial.emissiveTexture
+                ->getExtension<ExtensionKhrTextureTransform>()
+          : nullptr;
+  if (pEmissiveTextureTransform) {
+    textureTransform = KhrTextureTransform(*pEmissiveTextureTransform);
+    if (textureTransform.status() == KhrTextureTransformStatus::Valid) {
+      const glm::dvec2& scale = textureTransform.scale();
+      const glm::dvec2& offset = textureTransform.offset();
+
+      unityMaterial.SetTextureOffset(
+          materialProperties.getEmissiveTextureID(),
+          {static_cast<float>(offset[0]), static_cast<float>(offset[1])});
+      unityMaterial.SetTextureScale(
+          materialProperties.getEmissiveTextureID(),
+          {static_cast<float>(scale[0]), static_cast<float>(scale[1])});
+
+      const glm::dvec2& rotationSineCosine =
+          textureTransform.rotationSineCosine();
+      unityMaterial.SetVector(
+          materialProperties.getEmissiveTextureRotationID(),
+          {static_cast<float>(rotationSineCosine[0]),
+           static_cast<float>(rotationSineCosine[1]),
+           0.0f,
+           0.0f});
+    }
+  }
+
+  const ExtensionKhrTextureTransform* pOcclusionTextureTransform =
+      gltfMaterial.occlusionTexture
+          ? gltfMaterial.occlusionTexture
+                ->getExtension<ExtensionKhrTextureTransform>()
+          : nullptr;
+  if (pOcclusionTextureTransform) {
+    textureTransform = KhrTextureTransform(*pOcclusionTextureTransform);
+    if (textureTransform.status() == KhrTextureTransformStatus::Valid) {
+      const glm::dvec2& scale = textureTransform.scale();
+      const glm::dvec2& offset = textureTransform.offset();
+
+      unityMaterial.SetTextureOffset(
+          materialProperties.getOcclusionTextureID(),
+          {static_cast<float>(offset[0]), static_cast<float>(offset[1])});
+      unityMaterial.SetTextureScale(
+          materialProperties.getOcclusionTextureID(),
+          {static_cast<float>(scale[0]), static_cast<float>(scale[1])});
+
+      const glm::dvec2& rotationSineCosine =
+          textureTransform.rotationSineCosine();
+      unityMaterial.SetVector(
+          materialProperties.getOcclusionTextureRotationID(),
+          {static_cast<float>(rotationSineCosine[0]),
+           static_cast<float>(rotationSineCosine[1]),
+           0.0f,
+           0.0f});
+    }
+  }
+}
+} // namespace
+
 void* UnityPrepareRendererResources::prepareInMainThread(
     Cesium3DTilesSelection::Tile& tile,
     void* pLoadThreadResult_) {
@@ -997,7 +1316,8 @@ void* UnityPrepareRendererResources::prepareInMainThread(
   }
 
   DotNet::CesiumForUnity::Cesium3DTileset tilesetComponent =
-      this->_tileset.GetComponent<DotNet::CesiumForUnity::Cesium3DTileset>();
+      this->_tilesetGameObject
+          .GetComponent<DotNet::CesiumForUnity::Cesium3DTileset>();
 
   uint32_t currentOverlayCount =
       static_cast<uint32_t>(tilesetComponent.NativeImplementation()
@@ -1008,7 +1328,9 @@ void* UnityPrepareRendererResources::prepareInMainThread(
   auto pModelGameObject =
       std::make_unique<UnityEngine::GameObject>(System::String(name));
 
-  if (tilesetComponent.showTilesInHierarchy()) {
+  const bool showTilesInHierarchy = tilesetComponent.showTilesInHierarchy();
+
+  if (showTilesInHierarchy) {
     pModelGameObject->hideFlags(UnityEngine::HideFlags::DontSave);
   } else {
     pModelGameObject->hideFlags(
@@ -1016,8 +1338,10 @@ void* UnityPrepareRendererResources::prepareInMainThread(
         UnityEngine::HideFlags::HideInHierarchy);
   }
 
-  pModelGameObject->transform().SetParent(this->_tileset.transform(), false);
-  pModelGameObject->layer(this->_tileset.layer());
+  pModelGameObject->transform().SetParent(
+      this->_tilesetGameObject.transform(),
+      false);
+  pModelGameObject->layer(this->_tilesetGameObject.layer());
   pModelGameObject->SetActive(false);
 
   glm::dmat4 tileTransform = tile.getTransform();
@@ -1025,7 +1349,7 @@ void* UnityPrepareRendererResources::prepareInMainThread(
   tileTransform = GltfUtilities::applyGltfUpAxisTransform(model, tileTransform);
 
   DotNet::CesiumForUnity::CesiumGeoreference georeferenceComponent =
-      this->_tileset
+      this->_tilesetGameObject
           .GetComponentInParent<DotNet::CesiumForUnity::CesiumGeoreference>();
 
   const LocalHorizontalCoordinateSystem* pCoordinateSystem = nullptr;
@@ -1036,18 +1360,24 @@ void* UnityPrepareRendererResources::prepareInMainThread(
   }
 
   const bool createPhysicsMeshes = tilesetComponent.createPhysicsMeshes();
-  const bool showTilesInHierarchy = tilesetComponent.showTilesInHierarchy();
 
   int32_t meshIndex = 0;
 
-  DotNet::CesiumForUnity::CesiumMetadata pMetadataComponent = nullptr;
-  if (model.getExtension<ExtensionModelExtFeatureMetadata>()) {
-    pMetadataComponent =
-        pModelGameObject
-            ->GetComponentInParent<DotNet::CesiumForUnity::CesiumMetadata>();
-    if (pMetadataComponent == nullptr) {
-      pMetadataComponent =
-          this->_tileset.AddComponent<DotNet::CesiumForUnity::CesiumMetadata>();
+  // For backwards compatibility.
+  CesiumForUnity::CesiumMetadata metadataComponent =
+      pModelGameObject
+          ->GetComponentInParent<DotNet::CesiumForUnity::CesiumMetadata>();
+
+  if (metadataComponent == nullptr) {
+    // Only add the model metadata component here if the older component isn't
+    // attached.
+    auto pModelMetadata =
+        model.getExtension<ExtensionModelExtStructuralMetadata>();
+    if (pModelMetadata) {
+      CesiumFeaturesMetadataUtility::addModelMetadata(
+          *pModelGameObject,
+          model,
+          *pModelMetadata);
     }
   }
 
@@ -1062,11 +1392,10 @@ void* UnityPrepareRendererResources::prepareInMainThread(
        pCoordinateSystem,
        createPhysicsMeshes,
        showTilesInHierarchy,
-       currentOverlayCount,
-       &pMetadataComponent,
+       &metadataComponent,
        &tile,
-       &shaderProperty = _shaderProperty,
-       tilesetLayer = this->_tileset.layer()](
+       &materialProperties = this->_materialProperties,
+       tilesetLayer = this->_tilesetGameObject.layer()](
           const Model& gltf,
           const Node& node,
           const Mesh& mesh,
@@ -1149,162 +1478,13 @@ void* UnityPrepareRendererResources::prepareInMainThread(
         material.hideFlags(UnityEngine::HideFlags::HideAndDontSave);
         meshRenderer.material(material);
 
-        bool isTranslucent = primitiveInfo.isTranslucent;
         if (pMaterial) {
-          CESIUM_TRACE("Cesium::CreateMaterials");
-          if (pMaterial->pbrMetallicRoughness) {
-            // Add base color factor and metallic-roughness factor regardless
-            // of if the textures are present.
-            const std::vector<double>& baseColorFactorSrc =
-                pMaterial->pbrMetallicRoughness->baseColorFactor;
-            UnityEngine::Vector4 baseColorFactor;
-            baseColorFactor.x = baseColorFactorSrc.size() > 0
-                                    ? static_cast<float>(baseColorFactorSrc[0])
-                                    : 1.0f;
-            baseColorFactor.y = baseColorFactorSrc.size() > 1
-                                    ? static_cast<float>(baseColorFactorSrc[1])
-                                    : 1.0f;
-            baseColorFactor.z = baseColorFactorSrc.size() > 2
-                                    ? static_cast<float>(baseColorFactorSrc[2])
-                                    : 1.0f;
-            baseColorFactor.w = baseColorFactorSrc.size() > 3
-                                    ? static_cast<float>(baseColorFactorSrc[3])
-                                    : 1.0f;
-            material.SetVector(
-                shaderProperty.getBaseColorFactorID(),
-                baseColorFactor);
-
-            UnityEngine::Vector4 metallicRoughnessFactor;
-            metallicRoughnessFactor.x =
-                pMaterial->pbrMetallicRoughness->metallicFactor;
-            metallicRoughnessFactor.y =
-                pMaterial->pbrMetallicRoughness->roughnessFactor;
-            material.SetVector(
-                shaderProperty.getMetallicRoughnessFactorID(),
-                metallicRoughnessFactor);
-
-            const std::optional<TextureInfo>& baseColorTexture =
-                pMaterial->pbrMetallicRoughness->baseColorTexture;
-            if (baseColorTexture) {
-              auto texCoordIndexIt =
-                  primitiveInfo.uvIndexMap.find(baseColorTexture->texCoord);
-              if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
-                UnityEngine::Texture texture =
-                    TextureLoader::loadTexture(gltf, baseColorTexture->index);
-                if (texture != nullptr) {
-                  material.SetTexture(
-                      shaderProperty.getBaseColorTextureID(),
-                      texture);
-                  material.SetFloat(
-                      shaderProperty.getBaseColorTextureCoordinateIndexID(),
-                      static_cast<float>(texCoordIndexIt->second));
-                }
-              }
-            }
-
-            const std::optional<TextureInfo>& metallicRoughness =
-                pMaterial->pbrMetallicRoughness->metallicRoughnessTexture;
-            if (metallicRoughness) {
-              auto texCoordIndexIt =
-                  primitiveInfo.uvIndexMap.find(metallicRoughness->texCoord);
-              if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
-                UnityEngine::Texture texture =
-                    TextureLoader::loadTexture(gltf, metallicRoughness->index);
-                if (texture != nullptr) {
-                  material.SetTexture(
-                      shaderProperty.getMetallicRoughnessTextureID(),
-                      texture);
-                  material.SetFloat(
-                      shaderProperty
-                          .getMetallicRoughnessTextureCoordinateIndexID(),
-                      static_cast<float>(texCoordIndexIt->second));
-                }
-              }
-            }
-          }
-
-          if (pMaterial->normalTexture) {
-            auto texCoordIndexIt = primitiveInfo.uvIndexMap.find(
-                pMaterial->normalTexture->texCoord);
-            if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
-              UnityEngine::Texture texture = TextureLoader::loadTexture(
-                  gltf,
-                  pMaterial->normalTexture->index);
-              if (texture != nullptr) {
-                material.SetTexture(
-                    shaderProperty.getNormalMapTextureID(),
-                    texture);
-                material.SetFloat(
-                    shaderProperty.getNormalMapTextureCoordinateIndexID(),
-                    static_cast<float>(texCoordIndexIt->second));
-                material.SetFloat(
-                    shaderProperty.getNormalMapScaleID(),
-                    static_cast<float>(pMaterial->normalTexture->scale));
-              }
-            }
-          }
-
-          if (pMaterial->occlusionTexture) {
-            auto texCoordIndexIt = primitiveInfo.uvIndexMap.find(
-                pMaterial->occlusionTexture->texCoord);
-            if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
-              UnityEngine::Texture texture = TextureLoader::loadTexture(
-                  gltf,
-                  pMaterial->occlusionTexture->index);
-              if (texture != nullptr) {
-                material.SetTexture(
-                    shaderProperty.getOcclusionTextureID(),
-                    texture);
-                material.SetFloat(
-                    shaderProperty.getOcclusionTextureCoordinateIndexID(),
-                    static_cast<float>(texCoordIndexIt->second));
-                material.SetFloat(
-                    shaderProperty.getOcclusionStrengthID(),
-                    static_cast<float>(pMaterial->occlusionTexture->strength));
-              }
-            }
-          }
-
-          const std::vector<double>& emissiveFactorSrc =
-              pMaterial->emissiveFactor;
-          UnityEngine::Vector4 emissiveFactor;
-          emissiveFactor.x = emissiveFactorSrc.size() > 0
-                                 ? static_cast<float>(emissiveFactorSrc[0])
-                                 : 0.0f;
-          emissiveFactor.y = emissiveFactorSrc.size() > 1
-                                 ? static_cast<float>(emissiveFactorSrc[1])
-                                 : 0.0f;
-          emissiveFactor.z = emissiveFactorSrc.size() > 2
-                                 ? static_cast<float>(emissiveFactorSrc[2])
-                                 : 0.0f;
-          material.SetVector(
-              shaderProperty.getEmissiveFactorID(),
-              emissiveFactor);
-          if (pMaterial->emissiveTexture) {
-            auto texCoordIndexIt = primitiveInfo.uvIndexMap.find(
-                pMaterial->emissiveTexture->texCoord);
-            if (texCoordIndexIt != primitiveInfo.uvIndexMap.end()) {
-              UnityEngine::Texture texture = TextureLoader::loadTexture(
-                  gltf,
-                  pMaterial->emissiveTexture->index);
-              if (texture != nullptr) {
-                material.SetTexture(
-                    shaderProperty.getEmissiveTextureID(),
-                    texture);
-                material.SetFloat(
-                    shaderProperty.getEmissiveTextureCoordinateIndexID(),
-                    static_cast<float>(texCoordIndexIt->second));
-              }
-            }
-          }
-        }
-
-        // Initialize overlay UVs to all use index 0, attachRasterTile will
-        // update the uniforms with the correct UV index.
-        for (uint32_t i = 0; i < currentOverlayCount; ++i) {
-          material.SetFloat(
-              shaderProperty.getOverlayTextureCoordinateIndexID(i),
-              0);
+          setGltfMaterialParameterValues(
+              gltf,
+              primitiveInfo,
+              *pMaterial,
+              material,
+              materialProperties);
         }
 
         if (primitiveInfo.containsPoints) {
@@ -1348,13 +1528,22 @@ void* UnityPrepareRendererResources::prepareInMainThread(
           }
         }
 
-        const ExtensionMeshPrimitiveExtFeatureMetadata* pMetadata =
-            primitive.getExtension<ExtensionMeshPrimitiveExtFeatureMetadata>();
-        if (pMetadata) {
-          pMetadataComponent.NativeImplementation().addMetadata(
+        // For backwards compatibility.
+        if (metadataComponent != nullptr) {
+          metadataComponent.NativeImplementation().addMetadata(
               primitiveGameObject.transform().GetInstanceID(),
               &gltf,
               &primitive);
+        } else {
+          const ExtensionExtMeshFeatures* pFeatures =
+              primitive.getExtension<ExtensionExtMeshFeatures>();
+          if (pFeatures) {
+            CesiumFeaturesMetadataUtility::addPrimitiveFeatures(
+                primitiveGameObject,
+                gltf,
+                primitive,
+                *pFeatures);
+          }
         }
       });
 
@@ -1369,12 +1558,34 @@ void* UnityPrepareRendererResources::prepareInMainThread(
 
 namespace {
 
+void freePrimitiveFeatures(
+    const DotNet::UnityEngine::GameObject& primitiveGameObject) {
+  DotNet::CesiumForUnity::CesiumPrimitiveFeatures features =
+      primitiveGameObject
+          .GetComponent<DotNet::CesiumForUnity::CesiumPrimitiveFeatures>();
+  if (features == nullptr) {
+    return;
+  }
+
+  auto featureIdSets = features.featureIdSets();
+  if (featureIdSets.Length() == 0) {
+    return;
+  }
+
+  for (int32_t i = 0; i < featureIdSets.Length(); i++) {
+    featureIdSets[i].Dispose();
+  }
+}
+
 void freePrimitiveGameObject(
     const DotNet::UnityEngine::GameObject& primitiveGameObject,
-    const DotNet::CesiumForUnity::CesiumMetadata& maybeMetadata) {
-  if (maybeMetadata != nullptr) {
-    maybeMetadata.NativeImplementation().removeMetadata(
+    const DotNet::CesiumForUnity::CesiumMetadata& metadataComponent) {
+  // Kept for backwards compatibility.
+  if (metadataComponent != nullptr) {
+    metadataComponent.NativeImplementation().removeMetadata(
         primitiveGameObject.transform().GetInstanceID());
+  } else {
+    freePrimitiveFeatures(primitiveGameObject);
   }
 
   UnityEngine::MeshRenderer meshRenderer =
@@ -1387,8 +1598,11 @@ void freePrimitiveGameObject(
     for (int32_t i = 0, len = textureIDs.Count(); i < len; ++i) {
       int32_t textureID = textureIDs[i];
       UnityEngine::Texture texture = material.GetTexture(textureID);
-      if (texture != nullptr)
+      if (texture != nullptr &&
+          (texture.hideFlags() & UnityEngine::HideFlags::HideAndDontSave) ==
+              UnityEngine::HideFlags::HideAndDontSave) {
         UnityLifetime::Destroy(texture);
+      }
     }
 
     UnityLifetime::Destroy(material);
@@ -1403,6 +1617,24 @@ void freePrimitiveGameObject(
 
   // The MeshCollider shares a mesh with the MeshFilter, so no need to
   // destroy it explicitly.
+}
+
+void freeModelMetadata(const DotNet::UnityEngine::GameObject& modelGameObject) {
+  auto modelMetadata =
+      modelGameObject
+          .GetComponent<DotNet::CesiumForUnity::CesiumModelMetadata>();
+  if (modelMetadata == nullptr) {
+    return;
+  }
+
+  auto propertyTables = modelMetadata.propertyTables();
+  if (propertyTables.Length() == 0) {
+    return;
+  }
+
+  for (int32_t i = 0; i < propertyTables.Length(); i++) {
+    propertyTables[i].DisposeProperties();
+  }
 }
 
 } // namespace
@@ -1444,6 +1676,10 @@ void UnityPrepareRendererResources::free(
         UnityLifetime::Destroy(primitiveGameObject);
       }
 
+      if (metadataComponent == nullptr) {
+        freeModelMetadata(*pCesiumGameObject->pGameObject);
+      }
+
       UnityLifetime::Destroy(*pCesiumGameObject->pGameObject);
     }
   }
@@ -1457,7 +1693,7 @@ void* UnityPrepareRendererResources::prepareRasterInLoadThread(
 }
 
 void* UnityPrepareRendererResources::prepareRasterInMainThread(
-    Cesium3DTilesSelection::RasterOverlayTile& rasterTile,
+    CesiumRasterOverlays::RasterOverlayTile& rasterTile,
     void* pLoadThreadResult) {
   auto pTexture = std::make_unique<UnityEngine::Texture>(
       TextureLoader::loadTexture(rasterTile.getImage()));
@@ -1468,7 +1704,7 @@ void* UnityPrepareRendererResources::prepareRasterInMainThread(
 }
 
 void UnityPrepareRendererResources::freeRaster(
-    const Cesium3DTilesSelection::RasterOverlayTile& rasterTile,
+    const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
     void* pLoadThreadResult,
     void* pMainThreadResult) noexcept {
   if (pMainThreadResult) {
@@ -1480,36 +1716,10 @@ void UnityPrepareRendererResources::freeRaster(
   }
 }
 
-namespace {
-
-std::optional<uint32_t> findOverlayIndex(
-    const UnityEngine::GameObject& tileset,
-    const Cesium3DTilesSelection::RasterOverlay& overlay) {
-  DotNet::CesiumForUnity::Cesium3DTileset tilesetComponent =
-      tileset.GetComponent<DotNet::CesiumForUnity::Cesium3DTileset>();
-  Tileset* pTileset = tilesetComponent.NativeImplementation().getTileset();
-  if (!pTileset)
-    return std::nullopt;
-
-  uint32_t overlayIndex = 0;
-  for (const CesiumUtility::IntrusivePointer<RasterOverlay>& pOverlay :
-       pTileset->getOverlays()) {
-    if (&overlay == pOverlay.get()) {
-      return overlayIndex;
-    }
-
-    ++overlayIndex;
-  }
-
-  return std::nullopt;
-}
-
-} // namespace
-
 void UnityPrepareRendererResources::attachRasterInMainThread(
     const Cesium3DTilesSelection::Tile& tile,
     int32_t overlayTextureCoordinateID,
-    const Cesium3DTilesSelection::RasterOverlayTile& rasterTile,
+    const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
     void* pMainThreadRendererResources,
     const glm::dvec2& translation,
     const glm::dvec2& scale) {
@@ -1527,12 +1737,7 @@ void UnityPrepareRendererResources::attachRasterInMainThread(
   if (!pCesiumGameObject || !pCesiumGameObject->pGameObject || !pTexture)
     return;
 
-  std::optional<uint32_t> maybeOverlayIndex =
-      findOverlayIndex(this->_tileset, rasterTile.getOverlay());
-  if (!maybeOverlayIndex)
-    return;
-
-  uint32_t overlayIndex = *maybeOverlayIndex;
+  std::string key = rasterTile.getOverlay().getName();
 
   // We're assuming here that the order of primitives in the transform chain
   // is the same as the order in the `primitiveInfos`, which should
@@ -1579,29 +1784,34 @@ void UnityPrepareRendererResources::attachRasterInMainThread(
     // index - multiple overlays can use the _CESIUMOVERLAY_0 attribute for
     // example. The _CESIUMOVERLAY_<i> attributes correspond to unique
     // _projections_, not unique overlays.
-    material.SetFloat(
-        _shaderProperty.getOverlayTextureCoordinateIndexID(overlayIndex),
-        static_cast<float>(texCoordIndexIt->second));
+    auto maybeID =
+        this->_materialProperties.getOverlayTextureCoordinateIndexID(key);
+    if (maybeID) {
+      material.SetFloat(*maybeID, static_cast<float>(texCoordIndexIt->second));
+    }
 
-    material.SetTexture(
-        _shaderProperty.getOverlayTextureID(overlayIndex),
-        *pTexture);
+    maybeID = this->_materialProperties.getOverlayTextureID(key);
+    if (maybeID) {
+      material.SetTexture(*maybeID, *pTexture);
+    }
 
     UnityEngine::Vector4 translationAndScale{
         float(translation.x),
         float(translation.y),
         float(scale.x),
         float(scale.y)};
-    material.SetVector(
-        _shaderProperty.getOverlayTranslationAndScaleID(overlayIndex),
-        translationAndScale);
+
+    maybeID = this->_materialProperties.getOverlayTranslationAndScaleID(key);
+    if (maybeID) {
+      material.SetVector(*maybeID, translationAndScale);
+    }
   }
 }
 
 void UnityPrepareRendererResources::detachRasterInMainThread(
     const Cesium3DTilesSelection::Tile& tile,
     int32_t overlayTextureCoordinateID,
-    const Cesium3DTilesSelection::RasterOverlayTile& rasterTile,
+    const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
     void* pMainThreadRendererResources) noexcept {
   const Cesium3DTilesSelection::TileContent& content = tile.getContent();
   const Cesium3DTilesSelection::TileRenderContent* pRenderContent =
@@ -1619,13 +1829,6 @@ void UnityPrepareRendererResources::detachRasterInMainThread(
       *pCesiumGameObject->pGameObject == nullptr || pTexture == nullptr ||
       *pTexture == nullptr)
     return;
-
-  std::optional<uint32_t> maybeOverlayIndex =
-      findOverlayIndex(this->_tileset, rasterTile.getOverlay());
-  if (!maybeOverlayIndex)
-    return;
-
-  uint32_t overlayIndex = *maybeOverlayIndex;
 
   UnityEngine::Transform transform =
       pCesiumGameObject->pGameObject->transform();
@@ -1647,8 +1850,10 @@ void UnityPrepareRendererResources::detachRasterInMainThread(
     if (material == nullptr)
       continue;
 
-    material.SetTexture(
-        _shaderProperty.getOverlayTextureID(overlayIndex),
-        UnityEngine::Texture(nullptr));
+    auto maybeID = this->_materialProperties.getOverlayTextureID(
+        rasterTile.getOverlay().getName());
+    if (maybeID) {
+      material.SetTexture(*maybeID, UnityEngine::Texture(nullptr));
+    }
   }
 }

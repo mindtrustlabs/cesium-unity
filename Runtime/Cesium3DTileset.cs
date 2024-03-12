@@ -40,14 +40,16 @@ namespace CesiumForUnity
     [ExecuteInEditMode]
     [ReinteropNativeImplementation("CesiumForUnityNative::Cesium3DTilesetImpl", "Cesium3DTilesetImpl.h")]
     [AddComponentMenu("Cesium/Cesium 3D Tileset")]
-    [IconAttribute("Packages/com.cesium.unity/Editor/Resources/Cesium-24x24.png")]  
-    public partial class Cesium3DTileset : MonoBehaviour, IDisposable
+    [IconAttribute("Packages/com.cesium.unity/Editor/Resources/Cesium-24x24.png")]
+    public partial class Cesium3DTileset : MonoBehaviour, IDisposable, ISerializationCallbackReceiver
     {
         public void Dispose()
         {
             this.OnDisable();
             this.DisposeImplementation();
         }
+
+        #region Events and Delegates
 
         /// <summary>
         /// Encapsulates a method that receives details of a tileset load failure.
@@ -80,7 +82,7 @@ namespace CesiumForUnity
 
         internal void BroadcastNewGameObjectCreated(GameObject go)
         {
-            if(OnTileGameObjectCreated != null)
+            if (OnTileGameObjectCreated != null)
             {
                 OnTileGameObjectCreated(go);
             }
@@ -88,6 +90,9 @@ namespace CesiumForUnity
 
         internal static event Action OnSetShowCreditsOnScreen;
 
+        #endregion
+
+        #region Fields 
         [SerializeField]
         private bool _showCreditsOnScreen = false;
 
@@ -108,6 +113,7 @@ namespace CesiumForUnity
                 }
             }
         }
+
 
         [SerializeField]
         private CesiumDataSource _tilesetSource = CesiumDataSource.FromCesiumIon;
@@ -172,6 +178,40 @@ namespace CesiumForUnity
             set
             {
                 this._ionAccessToken = value;
+                this.RecreateTileset();
+            }
+        }
+
+        [SerializeField]
+        private CesiumIonServer _ionServer = null;
+
+        /// <summary>
+        /// The Cesium ion server from which this tileset is loaded.
+        /// </summary>
+        public CesiumIonServer ionServer
+        {
+            get
+            {
+                if (this._ionServer == null)
+                {
+#if UNITY_EDITOR
+                    // See OnAfterDeserialize.
+                    if (this._useDefaultServer)
+                        this._ionServer = CesiumIonServer.defaultServer;
+                    else
+                        this._ionServer = CesiumIonServer.serverForNewObjects;
+
+                    this._useDefaultServer = false;
+#else
+                    this._ionServer = CesiumIonServer.serverForNewObjects;
+#endif
+                }
+                return this._ionServer;
+            }
+            set
+            {
+                if (value == null) value = CesiumIonServer.serverForNewObjects;
+                this._ionServer = value;
                 this.RecreateTileset();
             }
         }
@@ -650,6 +690,10 @@ namespace CesiumForUnity
             }
         }
 
+        #endregion
+
+        #region Public Methods
+
         /// <summary>
         /// Estimate the percentage of the tiles for the current view that have been loaded. 
         /// </summary>
@@ -658,14 +702,6 @@ namespace CesiumForUnity
         /// </returns>
         public partial float ComputeLoadProgress();
 
-        private partial void SetShowCreditsOnScreen(bool value);
-
-        private partial void Start();
-        private partial void Update();
-        private partial void OnValidate();
-
-        private partial void OnEnable();
-        private partial void OnDisable();
 
         /// <summary>
         /// Destroy and recreate the tilset. All tiles are unloaded, and then the tileset is reloaded
@@ -677,5 +713,40 @@ namespace CesiumForUnity
         /// Zoom the Editor camera to this tileset. This method does nothing outside of the Editor.
         /// </summary>
         public partial void FocusTileset();
+
+        #endregion
+
+        #region Private Methods
+
+        private partial void SetShowCreditsOnScreen(bool value);
+
+        private partial void Start();
+        private partial void Update();
+        private partial void OnValidate();
+
+        private partial void OnEnable();
+        private partial void OnDisable();
+
+        internal partial void UpdateOverlayMaterialKeys();
+
+        #endregion
+
+        void ISerializationCallbackReceiver.OnBeforeSerialize()
+        {
+        }
+
+        void ISerializationCallbackReceiver.OnAfterDeserialize()
+        {
+#if UNITY_EDITOR
+            // For backward compatibility, tilesets loaded without a server should adopt
+            // the default one rather than the current one.
+            if (this._ionServer == null)
+                this._useDefaultServer = true;
+#endif
+        }
+
+#if UNITY_EDITOR
+        private bool _useDefaultServer = false;
+#endif
     }
 }

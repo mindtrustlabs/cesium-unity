@@ -1,7 +1,8 @@
 #pragma once
 
+#include "TilesetMaterialProperties.h"
+
 #include <Cesium3DTilesSelection/IPrepareRendererResources.h>
-#include <CesiumShaderProperties.h>
 
 #include <DotNet/UnityEngine/GameObject.h>
 
@@ -63,7 +64,7 @@ class UnityPrepareRendererResources
     : public Cesium3DTilesSelection::IPrepareRendererResources {
 public:
   UnityPrepareRendererResources(
-      const ::DotNet::UnityEngine::GameObject& tileset);
+      const ::DotNet::UnityEngine::GameObject& tilesetGameObject);
 
   virtual CesiumAsync::Future<
       Cesium3DTilesSelection::TileLoadResultAndRenderResources>
@@ -87,18 +88,18 @@ public:
       const std::any& rendererOptions) override;
 
   virtual void* prepareRasterInMainThread(
-      Cesium3DTilesSelection::RasterOverlayTile& rasterTile,
+      CesiumRasterOverlays::RasterOverlayTile& rasterTile,
       void* pLoadThreadResult) override;
 
   virtual void freeRaster(
-      const Cesium3DTilesSelection::RasterOverlayTile& rasterTile,
+      const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
       void* pLoadThreadResult,
       void* pMainThreadResult) noexcept override;
 
   virtual void attachRasterInMainThread(
       const Cesium3DTilesSelection::Tile& tile,
       int32_t overlayTextureCoordinateID,
-      const Cesium3DTilesSelection::RasterOverlayTile& rasterTile,
+      const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
       void* pMainThreadRendererResources,
       const glm::dvec2& translation,
       const glm::dvec2& scale) override;
@@ -106,12 +107,16 @@ public:
   virtual void detachRasterInMainThread(
       const Cesium3DTilesSelection::Tile& tile,
       int32_t overlayTextureCoordinateID,
-      const Cesium3DTilesSelection::RasterOverlayTile& rasterTile,
+      const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
       void* pMainThreadRendererResources) noexcept override;
 
+  TilesetMaterialProperties& getMaterialProperties() {
+    return this->_materialProperties;
+  }
+
 private:
-  ::DotNet::UnityEngine::GameObject _tileset;
-  CesiumShaderProperties _shaderProperty;
+  ::DotNet::UnityEngine::GameObject _tilesetGameObject;
+  TilesetMaterialProperties _materialProperties;
 };
 
 } // namespace CesiumForUnityNative
